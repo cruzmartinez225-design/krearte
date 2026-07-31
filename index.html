@@ -1,1213 +1,228 @@
-/**
- * KREARTE — BACKEND COMPLETO
- * Pega TODO este archivo en un único archivo Code.gs de Google Apps Script.
- * No mezcles este código con archivos .gs anteriores.
- */
-
-const KREARTE = {
-  SPREADSHEET_ID: '18JQk7szshTX6dCj6NtniQxbtFoI_Vj5rzf-wR6gKGn4',
-  TZ: 'America/Mexico_City',
-  STOCK_MINIMO: 3,
-  HOJAS: {
-    INVENTARIO: 'Inventario de Figuras',
-    DETALLE: 'Detalle_Pedidos',
-    REPORTE: 'Reporte_Mensual',
-    PEDIDOS: 'Pedidos',
-    SALIDAS: 'Salidas',
-    ALERTAS: 'Alertas Stock',
-    CREACIONES: 'Creaciones de inspiración',
-    PRESTAMOS: 'Préstamos',
-    TIENDAS: 'Tiendas',
-    EVENTOS: 'Eventos',
-    PALETAS: 'Paletas',
-    FRASES: 'Frases',
-    HISTORIAS: 'Historias',
-    BANNERS: 'Banners',
-PROXIMAMENTE: 'Proximamente'
-  },
-  ENCABEZADOS: {
-    INVENTARIO: ['Película / Animación', 'Inspiracion', 'Muestra', 'Figura', 'Tamaño', 'Material', 'Stock', 'Proveedor', 'imagen', 'Novedad'],
-    DETALLE: ['Folio', 'ID Figura', 'Figura', 'Tamaño', 'Material', 'Cantidad'],
-    REPORTE: ['Proveedor', 'Figura', 'Tamaño', 'Vendidas este mes'],
-    PEDIDOS: ['Folio', 'Fecha', 'Cliente', 'WhatsApp', 'Estado'],
-    SALIDAS: ['Fecha', 'Folio', 'Figura', 'Tamaño', 'Cantidad', 'AprobadoPor', 'Proveedor'],
-    ALERTAS: ['Proveedor', 'Figura', 'Tamaño', 'Stock actual', 'Estado']
-  }
-};
-
-/* =====================================================
-   ENTRADAS WEB
-===================================================== */
-
-function doGet(e) {
-  try {
-    const accion = normalizar_(e && e.parameter ? (e.parameter.accion || e.parameter.action || '') : '');
-
-    if (accion === 'productos') return json_(obtenerProductos_());
-    if (accion === 'novedades') return json_(obtenerProductos_().filter(function (p) { return verdadero_(p.novedad); }));
-    if (accion === 'banners') return json_({ok: true, data: leerObjetos_(KREARTE.HOJAS.BANNERS)});
-    if (accion === 'proximamente') {
-  return json_({
-    ok: true,
-    data: obtenerProximamente_()
-  });
-}
-    if (accion === 'tiendas') return json_({ok: true, data: leerObjetos_(KREARTE.HOJAS.TIENDAS)});
-    if (accion === 'eventos') return json_({ok: true, data: leerObjetos_(KREARTE.HOJAS.EVENTOS)});
-    if (accion === 'paletas') return json_({ok: true, data: leerObjetos_(KREARTE.HOJAS.PALETAS)});
-    if (accion === 'frases') return json_({ok: true, data: leerObjetos_(KREARTE.HOJAS.FRASES)});
-    if (accion === 'historias') return json_({ok: true, data: leerObjetos_(KREARTE.HOJAS.HISTORIAS)});
-    if (accion === 'creaciones') return json_({ok: true, data: leerObjetos_(KREARTE.HOJAS.CREACIONES)});
-    if (accion === 'prestamos') return json_({ok: true, data: leerObjetos_(KREARTE.HOJAS.PRESTAMOS)});
-    if (accion === 'pedidospendientes' || accion === 'obtenerpedidospendientes') {
-      return json_({ok: true, pedidos: obtenerPedidosPendientes_()});
-    }
-
-    return HtmlService.createHtmlOutput(crearPanel_())
-      .setTitle('Centro Krearte')
-      .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
-  } catch (error) {
-    return json_({ok: false, error: mensajeError_(error)});
-  }
-}
-
-function doPost(e) {
-  const lock = LockService.getScriptLock();
-  try {
-    lock.waitLock(30000);
-    const contenido = e && e.postData && e.postData.contents ? e.postData.contents : '{}';
-    const data = JSON.parse(contenido);
-    const accion = normalizar_(data.accion || data.action || 'guardarPedido');
-
-    if (accion === 'guardarpedido' || accion === 'pedido' || accion === 'crearpedido') {
-      return json_(guardarPedido_(data));
-    }
-    if (accion === 'aceptarpedido') return json_(aceptarPedido_(data.folio, data.aprobadoPor || 'Karlita'));
-    if (accion === 'rechazarpedido') return json_(rechazarPedido_(data.folio));
-    if (accion === 'guardarprestamo' || accion === 'prestamo') return json_(guardarPrestamo_(data));
-    if (accion === 'devolverprestamo') return json_(devolverPrestamo_(data));
-
-    return json_({ok: false, error: 'Acción POST no reconocida.'});
-  } catch (error) {
-    return json_({ok: false, error: mensajeError_(error)});
-  } finally {
-    try { lock.releaseLock(); } catch (_) {}
-  }
-}
-
-/* =====================================================
-   PREPARACIÓN Y VALIDACIÓN
-===================================================== */
-
-function prepararSistema() {
-  const ss = libro_();
-  validarHoja_(ss, KREARTE.HOJAS.INVENTARIO, KREARTE.ENCABEZADOS.INVENTARIO);
-  validarHoja_(ss, KREARTE.HOJAS.DETALLE, KREARTE.ENCABEZADOS.DETALLE);
-  validarHoja_(ss, KREARTE.HOJAS.REPORTE, KREARTE.ENCABEZADOS.REPORTE);
-  validarHoja_(ss, KREARTE.HOJAS.PEDIDOS, KREARTE.ENCABEZADOS.PEDIDOS);
-  validarHoja_(ss, KREARTE.HOJAS.SALIDAS, KREARTE.ENCABEZADOS.SALIDAS);
-  validarHoja_(ss, KREARTE.HOJAS.ALERTAS, KREARTE.ENCABEZADOS.ALERTAS);
-
-  [
-    KREARTE.HOJAS.CREACIONES, KREARTE.HOJAS.PRESTAMOS, KREARTE.HOJAS.TIENDAS,
-    KREARTE.HOJAS.EVENTOS, KREARTE.HOJAS.PALETAS, KREARTE.HOJAS.FRASES,
-    KREARTE.HOJAS.HISTORIAS, KREARTE.HOJAS.BANNERS
-  ].forEach(function (nombre) {
-    if (!ss.getSheetByName(nombre)) throw new Error('No existe la hoja: ' + nombre);
-  });
-
-  generarAlertasStock();
-  generarReporteMensual();
-  return 'Sistema Krearte preparado correctamente.';
-}
-
-function validarHoja_(ss, nombre, encabezados) {
-  const hoja = ss.getSheetByName(nombre);
-  if (!hoja) throw new Error('No existe la hoja: ' + nombre);
-  const actuales = hoja.getRange(1, 1, 1, encabezados.length).getDisplayValues()[0];
-  for (let i = 0; i < encabezados.length; i++) {
-    if (normalizar_(actuales[i]) !== normalizar_(encabezados[i])) {
-      throw new Error('Encabezado incorrecto en ' + nombre + ', columna ' + (i + 1) + '. Debe ser: ' + encabezados[i]);
-    }
-  }
-}
-
-/* =====================================================
-   INVENTARIO Y CATÁLOGO
-===================================================== */
-
-function obtenerProductos() {
-  return obtenerProductos_();
-}
-
-function obtenerProductos_() {
-  const valores = hoja_(KREARTE.HOJAS.INVENTARIO)
-    .getDataRange()
-    .getDisplayValues();
-
-  const productos = [];
-  let categoriaActual = 'Varios';
-
-  for (let i = 1; i < valores.length; i++) {
-    const fila = valores[i];
-
-    const categoriaFila = texto_(fila[0]);
-    if (categoriaFila) categoriaActual = categoriaFila;
-
-    const figura = texto_(fila[3]);
-    if (!figura) continue;
-
-    const muestra = prepararUrlImagen_(fila[2]);
-    const imagenOriginal = prepararUrlImagen_(fila[8]);
-    const imagenPrincipal = imagenOriginal || muestra;
-
-    productos.push({
-      categoria: categoriaActual,
-      inspiracion: texto_(fila[1]),
-
-      // Fuentes separadas para que el frontend pueda intentar ambas.
-      muestra: muestra,
-      imagen: imagenPrincipal,
-      imagenOriginal: imagenOriginal || muestra,
-
-      // Lista de respaldo.
-      imagenesAlternativas: [
-        imagenOriginal,
-        muestra
-      ].filter(function (url, indice, lista) {
-        return url && lista.indexOf(url) === indice;
-      }),
-
-      figura: figura,
-      tamano: texto_(fila[4]),
-      tamaño: texto_(fila[4]),
-      material: texto_(fila[5]),
-      stock: numero_(fila[6]),
-      proveedor: texto_(fila[7]),
-      novedad: texto_(fila[9])
-    });
-  }
-
-  return productos;
-}
-
-/* =====================================================
-   GUARDAR PEDIDO DESDE LA PÁGINA
-===================================================== */
-
-function guardarPedido_(data) {
-  const ss = libro_();
-  const pedidos = hoja_(KREARTE.HOJAS.PEDIDOS);
-  const detalle = hoja_(KREARTE.HOJAS.DETALLE);
-
-  const cliente = limpiarTexto_(data.cliente || data.nombre || 'Cliente', 120);
-  const whatsapp = limpiarTelefono_(data.whatsapp || data.telefono || '');
-  const items = Array.isArray(data.items) ? data.items :
-    (Array.isArray(data.productos) ? data.productos :
-    (Array.isArray(data.carrito) ? data.carrito : []));
-
-  if (!cliente) throw new Error('Falta el nombre de la clienta.');
-  if (!whatsapp) throw new Error('Falta el WhatsApp de la clienta.');
-  if (!items.length) throw new Error('El pedido no contiene figuras.');
-
-  const filasDetalle = items.map(function (item) {
-    const figura = limpiarTexto_(item.figura || item.nombre || item.name || '', 150);
-    const tamano = limpiarTexto_(item.tamano || item.tamaño || item.size || '', 80);
-    const material = limpiarTexto_(item.material || '', 80);
-    const cantidad = cantidad_(item.cantidad || item.quantity || 1);
-    if (!figura) throw new Error('Una figura del pedido no tiene nombre.');
-    return [null, crearIdFigura_(figura, tamano), figura, tamano, material, cantidad];
-  });
-
-  const folio = limpiarTexto_(data.folio || generarFolio_(), 80);
-  const fecha = new Date();
-  filasDetalle.forEach(function (fila) { fila[0] = folio; });
-
-  // Primero guarda el pedido y después su detalle.
-  pedidos.appendRow([folio, fecha, cliente, whatsapp, 'Pendiente']);
-  detalle.getRange(detalle.getLastRow() + 1, 1, filasDetalle.length, 6).setValues(filasDetalle);
-  SpreadsheetApp.flush();
-
-  return {ok: true, folio: folio, estado: 'Pendiente', mensaje: 'Pedido registrado correctamente.'};
-}
-
-/* =====================================================
-   PEDIDOS PENDIENTES
-===================================================== */
-
-function obtenerPedidosPendientes() {
-  return obtenerPedidosPendientes_();
-}
-
-function obtenerPedidosPendientes_() {
-  const pedidos = hoja_(KREARTE.HOJAS.PEDIDOS).getDataRange().getValues();
-  const detalles = hoja_(KREARTE.HOJAS.DETALLE).getDataRange().getValues();
-  const salida = [];
-
-  for (let i = 1; i < pedidos.length; i++) {
-    const fila = pedidos[i];
-    if (normalizar_(fila[4]) !== 'pendiente') continue;
-    const folio = texto_(fila[0]);
-    const productos = [];
-
-    for (let j = 1; j < detalles.length; j++) {
-      if (texto_(detalles[j][0]) !== folio) continue;
-      productos.push({
-        idFigura: texto_(detalles[j][1]),
-        figura: texto_(detalles[j][2]),
-        tamano: texto_(detalles[j][3]),
-        material: texto_(detalles[j][4]),
-        cantidad: numero_(detalles[j][5])
-      });
-    }
-
-    salida.push({
-      folio: folio,
-      fecha: formatearFecha_(fila[1]),
-      cliente: texto_(fila[2]),
-      whatsapp: texto_(fila[3]),
-      estado: texto_(fila[4]),
-      productos: productos,
-      items: productos
-    });
-  }
-  return salida;
-}
-
-/* =====================================================
-   ACEPTAR / RECHAZAR
-===================================================== */
-
-function aceptarPedido(folio, aprobadoPor) {
-  return aceptarPedido_(folio, aprobadoPor);
-}
-
-function aceptarPedido_(folio, aprobadoPor) {
-  folio = limpiarTexto_(folio, 80);
-  aprobadoPor = limpiarTexto_(aprobadoPor || 'Karlita', 80);
-  if (!folio) throw new Error('Falta el folio.');
-
-  const hojaPedidos = hoja_(KREARTE.HOJAS.PEDIDOS);
-  const hojaDetalle = hoja_(KREARTE.HOJAS.DETALLE);
-  const hojaInventario = hoja_(KREARTE.HOJAS.INVENTARIO);
-  const hojaSalidas = hoja_(KREARTE.HOJAS.SALIDAS);
-
-  const pedido = buscarPedido_(hojaPedidos, folio);
-  if (!pedido) throw new Error('No se encontró el pedido ' + folio + '.');
-  const estado = normalizar_(pedido.valores[4]);
-  if (estado === 'aceptado') throw new Error('Este pedido ya fue aceptado.');
-  if (estado === 'rechazado') throw new Error('Este pedido está rechazado.');
-
-  const detalles = buscarDetalles_(hojaDetalle, folio);
-  if (!detalles.length) throw new Error('El pedido no contiene detalle de productos.');
-
-  const inventario = hojaInventario.getDataRange().getValues();
-  const movimientos = [];
-  const consumos = {};
-
-  // Agrupar cantidades por Figura + Tamaño.
-  detalles.forEach(function (detalle) {
-    const figura = texto_(detalle.valores[2]);
-    const tamano = texto_(detalle.valores[3]);
-    const cantidad = cantidad_(detalle.valores[5]);
-    const clave = claveFigura_(figura, tamano);
-    if (!consumos[clave]) consumos[clave] = {figura: figura, tamano: tamano, cantidad: 0};
-    consumos[clave].cantidad += cantidad;
-  });
-
-  // Validar TODO antes de descontar.
-  Object.keys(consumos).forEach(function (clave) {
-    const consumo = consumos[clave];
-    const item = buscarInventarioEnValores_(inventario, consumo.figura, consumo.tamano);
-    if (!item) throw new Error('No se encontró en inventario: ' + consumo.figura + ' — ' + consumo.tamano + '.');
-    if (item.stock < consumo.cantidad) {
-      throw new Error('Stock insuficiente para ' + consumo.figura + ' — ' + consumo.tamano + '. Disponible: ' + item.stock + '.');
-    }
-    movimientos.push({
-      fila: item.fila,
-      figura: consumo.figura,
-      tamano: consumo.tamano,
-      cantidad: consumo.cantidad,
-      stockNuevo: item.stock - consumo.cantidad,
-      proveedor: item.proveedor
-    });
-  });
-
-  const fecha = new Date();
-  movimientos.forEach(function (mov) {
-    hojaInventario.getRange(mov.fila, 7).setValue(mov.stockNuevo);
-    hojaSalidas.appendRow([fecha, folio, mov.figura, mov.tamano, mov.cantidad, aprobadoPor, mov.proveedor]);
-  });
-
-  hojaPedidos.getRange(pedido.fila, 5).setValue('Aceptado');
-  SpreadsheetApp.flush();
-  generarAlertasStock();
-  generarReporteMensual();
-
-  return {ok: true, folio: folio, estado: 'Aceptado', mensaje: 'Pedido aceptado e inventario actualizado.'};
-}
-
-function rechazarPedido(folio) {
-  return rechazarPedido_(folio);
-}
-
-function rechazarPedido_(folio) {
-  folio = limpiarTexto_(folio, 80);
-  if (!folio) throw new Error('Falta el folio.');
-  const hojaPedidos = hoja_(KREARTE.HOJAS.PEDIDOS);
-  const pedido = buscarPedido_(hojaPedidos, folio);
-  if (!pedido) throw new Error('No se encontró el pedido ' + folio + '.');
-  const estado = normalizar_(pedido.valores[4]);
-  if (estado === 'aceptado') throw new Error('Un pedido aceptado no puede rechazarse.');
-  if (estado === 'rechazado') return {ok: true, folio: folio, estado: 'Rechazado', mensaje: 'El pedido ya estaba rechazado.'};
-  hojaPedidos.getRange(pedido.fila, 5).setValue('Rechazado');
-  SpreadsheetApp.flush();
-  return {ok: true, folio: folio, estado: 'Rechazado', mensaje: 'Pedido rechazado.'};
-}
-
-/* =====================================================
-   ALERTAS DE STOCK
-===================================================== */
-
-function generarAlertasStock() {
-  const inventario = hoja_(KREARTE.HOJAS.INVENTARIO).getDataRange().getValues();
-  const hojaAlertas = hoja_(KREARTE.HOJAS.ALERTAS);
-  const filas = [];
-
-  for (let i = 1; i < inventario.length; i++) {
-    const figura = texto_(inventario[i][3]);
-    if (!figura) continue;
-    const stock = numero_(inventario[i][6]);
-    if (stock > KREARTE.STOCK_MINIMO) continue;
-    filas.push([
-      texto_(inventario[i][7]) || 'Sin proveedor',
-      figura,
-      texto_(inventario[i][4]),
-      stock,
-      stock <= 0 ? 'Agotado' : 'Stock bajo'
-    ]);
-  }
-
-  limpiarDatos_(hojaAlertas, 5);
-  if (filas.length) hojaAlertas.getRange(2, 1, filas.length, 5).setValues(filas);
-  SpreadsheetApp.flush();
-  return {ok: true, total: filas.length, mensaje: 'Alertas de stock actualizadas.'};
-}
-
-/* =====================================================
-   REPORTE MENSUAL
-===================================================== */
-
-function generarReporteMensual() {
-  const salidas = hoja_(KREARTE.HOJAS.SALIDAS).getDataRange().getValues();
-  const reporte = hoja_(KREARTE.HOJAS.REPORTE);
-  const ahora = new Date();
-  const mes = ahora.getMonth();
-  const ano = ahora.getFullYear();
-  const acumulado = {};
-
-  for (let i = 1; i < salidas.length; i++) {
-    const fecha = salidas[i][0];
-    if (!(fecha instanceof Date) || isNaN(fecha.getTime())) continue;
-    if (fecha.getMonth() !== mes || fecha.getFullYear() !== ano) continue;
-    const proveedor = texto_(salidas[i][6]) || 'Sin proveedor';
-    const figura = texto_(salidas[i][2]);
-    const tamano = texto_(salidas[i][3]);
-    const cantidad = numero_(salidas[i][4]);
-    const clave = [proveedor, figura, tamano].join('||');
-    if (!acumulado[clave]) acumulado[clave] = {proveedor: proveedor, figura: figura, tamano: tamano, cantidad: 0};
-    acumulado[clave].cantidad += cantidad;
-  }
-
-  const filas = Object.keys(acumulado).map(function (clave) {
-    const x = acumulado[clave];
-    return [x.proveedor, x.figura, x.tamano, x.cantidad];
-  }).sort(function (a, b) {
-    return String(a[0]).localeCompare(String(b[0])) || String(a[1]).localeCompare(String(b[1]));
-  });
-
-  limpiarDatos_(reporte, 4);
-  if (filas.length) reporte.getRange(2, 1, filas.length, 4).setValues(filas);
-  else reporte.getRange(2, 1, 1, 2).setValues([['Sin datos', 'No hay salidas registradas este mes']]);
-  SpreadsheetApp.flush();
-  return {ok: true, total: filas.length, mensaje: 'Reporte mensual actualizado.'};
-}
-
-/* =====================================================
-   REPOSICIÓN 14 DÍAS
-===================================================== */
-
-function generarReposicion14Dias() {
-  generarAlertasStock();
-  const alertas = hoja_(KREARTE.HOJAS.ALERTAS).getDataRange().getDisplayValues();
-  const total = Math.max(0, alertas.length - 1);
-  return {ok: true, total: total, mensaje: 'Reposición de 14 días preparada con ' + total + ' pieza(s).'};
-}
-
-/* =====================================================
-   PRÉSTAMOS (COMPATIBILIDAD)
-===================================================== */
-
-function guardarPrestamo_(data) {
-  const hoja = hoja_(KREARTE.HOJAS.PRESTAMOS);
-  const folio = limpiarTexto_(data.folio || ('PRE-' + generarFolio_()), 80);
-  const fecha = new Date();
-  const mayorista = limpiarTexto_(data.mayorista || data.cliente || '', 120);
-  const whatsapp = limpiarTelefono_(data.whatsapp || '');
-  const idFigura = limpiarTexto_(data.idFigura || '', 100);
-  const figura = limpiarTexto_(data.figura || '', 150);
-  const cantidad = cantidad_(data.cantidad || 1);
-  const fechaLimite = data.fechaLimite ? new Date(data.fechaLimite) : '';
-  const estado = limpiarTexto_(data.estado || 'Prestado', 50);
-  const qr = limpiarTexto_(data.qr || '', 500);
-  const observaciones = limpiarTexto_(data.observaciones || '', 500);
-  hoja.appendRow([folio, fecha, mayorista, whatsapp, idFigura, figura, cantidad, fechaLimite, estado, qr, observaciones]);
-  return {ok: true, folio: folio, mensaje: 'Préstamo registrado.'};
-}
-
-function devolverPrestamo_(data) {
-  const hoja = hoja_(KREARTE.HOJAS.PRESTAMOS);
-  const folio = limpiarTexto_(data.folio || '', 80);
-  const valores = hoja.getDataRange().getValues();
-  for (let i = 1; i < valores.length; i++) {
-    if (texto_(valores[i][0]) === folio) {
-      hoja.getRange(i + 1, 9).setValue('Devuelto');
-      return {ok: true, folio: folio, mensaje: 'Préstamo marcado como devuelto.'};
-    }
-  }
-  throw new Error('No se encontró el préstamo.');
-}
-
-/* =====================================================
-   PANEL CENTRO KREARTE
-===================================================== */
-
-function crearPanel_() {
-  return `<!doctype html>
+<!DOCTYPE html>
 <html lang="es">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Centro Krearte</title>
-  <style>
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      padding: 28px 18px;
-      font-family: Arial, sans-serif;
-      background: #fff8fb;
-      color: #2d2228;
-    }
-    main { max-width: 1050px; margin: auto; }
-    h1 {
-      margin: 0 0 26px;
-      color: #b84c7e;
-      font-size: 34px;
-    }
-    .acciones {
-      display: flex;
-      gap: 14px;
-      flex-wrap: wrap;
-      margin-bottom: 25px;
-    }
-    button {
-      border: 0;
-      border-radius: 24px;
-      padding: 13px 20px;
-      font-weight: 700;
-      cursor: pointer;
-      color: white;
-    }
-    .repo { background: #cda37c; }
-    .mensual { background: #be447b; }
-    .alerta { background: #28777a; }
-    .aceptar { background: #3c875c; }
-    .rechazar { background: #b94e57; }
-    .pedido {
-      background: #fff;
-      border: 1px solid #ecdce4;
-      border-radius: 18px;
-      padding: 18px;
-      margin: 15px 0;
-      box-shadow: 0 7px 20px rgba(80, 30, 55, 0.07);
-    }
-    .pedido h2 { margin: 0 0 10px; color: #a83f70; }
-    .pedido p { margin: 6px 0; }
-    .pedido ul { padding-left: 22px; line-height: 1.7; }
-    .botones {
-      display: flex;
-      gap: 10px;
-      flex-wrap: wrap;
-      margin-top: 15px;
-    }
-    .mensaje {
-      min-height: 22px;
-      margin: 12px 0;
-      font-weight: 700;
-    }
-    .ok { color: #28734b; }
-    .error { color: #ae303b; }
-    .cargando { padding: 18px 0; }
-    button:disabled { opacity: 0.55; cursor: wait; }
-
-    .login-pantalla {
-      position: fixed;
-      inset: 0;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 20px;
-      background: #fff8fb;
-      z-index: 9999;
-    }
-
-    .login-caja {
-      width: 100%;
-      max-width: 380px;
-      background: #ffffff;
-      padding: 30px;
-      border: 1px solid #ecdce4;
-      border-radius: 20px;
-      box-shadow: 0 10px 35px rgba(80, 30, 55, 0.12);
-    }
-
-    .login-caja h1 {
-      margin-bottom: 8px;
-      text-align: center;
-    }
-
-    .login-caja p {
-      margin: 0 0 22px;
-      text-align: center;
-      color: #76636c;
-    }
-
-    .login-caja label {
-      display: block;
-      margin: 12px 0 6px;
-      font-weight: 700;
-    }
-
-    .login-caja input {
-      width: 100%;
-      padding: 12px 14px;
-      border: 1px solid #d8c8d0;
-      border-radius: 10px;
-      font-size: 16px;
-    }
-
-    .login-caja button {
-      width: 100%;
-      margin-top: 18px;
-      background: #b84c7e;
-    }
-
-    #loginMensaje {
-      min-height: 22px;
-      margin-top: 12px;
-      color: #ae303b;
-      text-align: center;
-      font-weight: 700;
-    }
-
-    @media (max-width: 600px) {
-      body { padding: 20px 12px; }
-      h1 { font-size: 28px; }
-      .acciones button, .botones button { width: 100%; }
-    }
-  </style>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Krearte — Krea Arte, Krea Recuerdos</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600;700;800&family=Playfair+Display:ital,wght@0,600;0,700;1,500;1,700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css?v=20260721-pinterest-hd" />
 </head>
 <body>
+  <nav class="topbar clean-topbar">
+    <a href="#inicio" class="brand-mini clean-brand"><img src="assets/logo-krearte.jpg" alt="Krearte"><span>Krearte</span></a>
+    <div class="nav-links clean-links">
+      <a href="#inicio">Inicio</a>
+      <a href="#catalogo">Catálogo</a>
+      <a href="#tiendas-krearte">Mapa</a>
+    </div>
+    <button class="paint-cart starry-cart" onclick="toggleCart()" aria-label="Abrir mi pedido">
+      <span class="coffee-frame" aria-hidden="true">☕</span>
+      <b id="cart-count">0</b>
+    </button>
+  </nav>
 
-  <div id="loginPantalla" class="login-pantalla">
-    <div class="login-caja">
-      <h1>Centro Krearte</h1>
-      <p>Acceso administrativo</p>
+  <section class="stories-top" aria-label="Historias Krearte">
+    <div id="arrival-stories" class="stories-rail top-stories-rail">
+      <div class="story-loading">Cargando historias...</div>
+    </div>
+  </section>
 
-      <label>Usuario</label>
-      <input id="loginUsuario" type="text" autocomplete="username">
+  <section id="banner-krearte" class="dynamic-banner-section" aria-label="Banner principal Krearte">
+    <div id="dynamic-banner" class="dynamic-banner">
+      <div class="banner-copy">
+        <p class="section-kicker">La película del momento</p>
+        <h2>Krea Arte, Krea Recuerdos</h2>
+        <p>Descubre las colecciones que están en tendencia y píntalas a tu estilo.</p>
+        <button type="button" onclick="document.getElementById('catalogo').scrollIntoView({behavior:'smooth'})">Ver colección</button>
+      </div>
+    </div>
+  </section>
 
-      <label>Contraseña</label>
-      <input id="loginPassword" type="password" autocomplete="current-password">
+  <header id="inicio" class="new-hero-krearte">
+    <div class="hero-paper-glow" aria-hidden="true"></div>
+    <div class="hero-logo-medallion"><img src="assets/logo-krearte.jpg" alt="Logo Krearte"></div>
+    <p class="section-kicker">Taller Creativo Krearte</p>
+    <h1>¿Qué quieres crear hoy?</h1>
+    <p class="hero-clean-copy">Aquí no solo pintamos figuras: creamos momentos con familia, amigos, parejas y nuevas ideas para emprender.</p>
+  </header>
 
-      <button onclick="entrar()">Entrar</button>
+  <section id="acaban-de-llegar" class="marigold-coming muertos-coming">
+    <div class="muertos-art" aria-hidden="true">
+      <img id="proximamente-imagen" class="coming-event-image" src="" alt="" hidden>
+      <div id="proximamente-imagen-respaldo" class="proximamente-imagen-respaldo">
+        <div class="cempasuchil-bloom"><span></span><span></span><span></span><span></span><span></span><span></span><i></i></div>
+        <div class="pan-muerto-azucarado"><b></b><i></i><em></em><strong></strong></div>
+      </div>
+    </div>
+    <div class="coming-copy">
+      <p id="proximamente-etiqueta" class="section-kicker">Próximamente</p>
+      <h2 id="proximamente-titulo">Colección Día de Muertos</h2>
+      <p id="proximamente-descripcion">Una temporada especial con flores de cempasúchil, catrinas elegantes y piezas para pintar recuerdos llenos de tradición.</p>
+    </div>
+  </section>
 
-      <div id="loginMensaje"></div>
+  <section id="materiales" class="materials-section material-clean-section">
+    <p class="section-kicker">Materiales</p>
+    <h2>Elige el material ideal para tu proyecto</h2>
+    <div class="materials-grid material-clean-grid">
+      <article role="button" tabindex="0" onclick="openMaterial('yeso')" onkeydown="materialKey(event,'yeso')"><span class="material-mark yeso"></span><h3>Yeso</h3><p>Ligero, económico y perfecto para pintar en fiestas, talleres, escuelas o recuerdos. Ideal si quieres muchas piezas para decorar.</p><button type="button">Ver piezas de yeso</button></article>
+      <article role="button" tabindex="0" onclick="openMaterial('ceramica')" onkeydown="materialKey(event,'ceramica')"><span class="material-mark ceramica"></span><h3>Cerámica</h3><p>Más fina, resistente y elegante. Perfecta para regalos especiales, decoración de hogar y piezas que quieres conservar por más tiempo.</p><button type="button">Ver piezas de cerámica</button></article>
+      <article role="button" tabindex="0" onclick="openMaterial('barro')" onkeydown="materialKey(event,'barro')"><span class="material-mark barro"></span><h3>Barro</h3><p>Artesanal, cálido y con esencia mexicana. Ideal para macetas, bases, velas aromáticas y decoración con personalidad.</p><button type="button">Ver piezas de barro</button></article>
+    </div>
+  </section>
+
+  <section class="category-bubbles-section clean-category-showcase" aria-label="Películas y animaciones">
+    <div class="section-mini-head clean-section-head">
+      <div><p class="section-kicker">Películas y animaciones</p><h2>Explora por colección</h2></div>
+      <button type="button" onclick="document.getElementById('catalogo').scrollIntoView({behavior:'smooth'})">Ver todo</button>
+    </div>
+    <div id="movie-category-bubbles" class="category-bubbles-rail clean-category-rail">
+      <div class="story-loading">Cargando categorías...</div>
+    </div>
+  </section>
+
+    <section id="descubrete" class="creative-finder homey-section">
+    <div class="finder-intro">
+      <p class="section-kicker">Descúbrete creando</p>
+      <h2>Cuéntanos qué tienes en mente</h2>
+      <p>Te hacemos unas preguntas rápidas y te recomendamos figuras para una cita, una tarde en familia, un regalo, una fiesta o un nuevo emprendimiento.</p>
+      <button class="brush-btn finder-start" type="button" onclick="startCreativeFinder()">Quiero descubrir mi próxima creación</button>
+    </div>
+    <div id="finder-panel" class="finder-panel" aria-live="polite">
+      <div class="finder-placeholder">
+        <span class="finder-flower"></span>
+        <strong>Tu recomendación aparecerá aquí</strong>
+        <p>También podrás guardar piezas con el corazón y agregar tus favoritas al carrito.</p>
+      </div>
+    </div>
+  </section>
+
+
+  <section id="paletas-krearte" class="palette-page-section">
+    <p class="section-kicker">Paleta de colores</p><h2>Colores para inspirarte</h2><div id="palette-preview" class="season-palette-list"></div>
+  </section>
+
+  <section id="temporadas-krearte" class="season-page-section">
+    <p class="section-kicker">Temporadas</p><h2>Ideas y colores para cada época del año</h2><div id="season-preview" class="season-palette-list"></div>
+  </section>
+
+  <main id="catalogo" class="catalogue clean-catalogue">
+    <div class="catalogue-head">
+      <div><p class="section-kicker">Catálogo completo</p><h2>Todas las piezas Krearte</h2><p id="product-total" class="muted"></p></div>
+      <div class="filters"><input id="search" type="search" placeholder="Buscar figura, película o material..."><select id="category-filter"></select><select id="stock-filter"><option value="all">Todas</option><option value="available">En existencia</option><option value="order">Sobre pedido</option></select></div>
+    </div>
+    <div id="category-chips" class="chips"></div>
+    <div id="categories" class="categories"></div>
+  </main>
+
+  <section id="sugerencias" class="suggestions clean-suggestions">
+    <div class="suggestion-card">
+      <span class="jar brush-jar"></span>
+      <h2>Caja de sugerencias</h2>
+      <p>¿Quieres una figura nueva, una temática especial o un pedido para evento? Cuéntanos tu idea.</p>
+      <textarea id="suggestion-text" placeholder="Escribe aquí tu sugerencia..."></textarea>
+      <div class="suggestion-actions"><select id="suggestion-city"><option value="celaya">Enviar a Celaya — Karlita</option><option value="queretaro">Enviar a Querétaro — Santi</option></select><button class="brush-btn" onclick="sendSuggestion()">Enviar por WhatsApp</button></div>
+    </div>
+  </section>
+
+  <section id="tiendas-krearte" class="stores-section clean-stores">
+    <p class="section-kicker">Comunidad Krearte</p>
+    <h2>Busca tu tienda de arte más cercana</h2>
+    <p class="muted">Localiza nuestros distribuidores autorizados en Celaya y encuentra el punto Krearte más cercano a ti.</p>
+    <div id="celaya-map" class="celaya-map" aria-label="Mapa de distribuidores en Celaya"></div>
+    <div id="stores-grid" class="stores-grid">
+      <article class="store-card"><strong>Cargando tiendas...</strong><span>Celaya, Guanajuato</span><p>Tomaremos la información activa desde la hoja Tiendas.</p></article>
+    </div>
+  </section>
+
+  <aside id="cart-modal" class="cart-modal">
+    <div class="cart-header"><div><p class="section-kicker">Mi Pedido</p><h2>☕ Mientras preparas tu café... nosotros preparamos tu pedido.</h2></div><button onclick="toggleCart()">✕</button></div>
+    <div id="cart-items" class="cart-items"></div>
+    <div class="destination"><label>¿Dónde deseas hacer tu pedido?</label><select id="destination"><option value="celaya">Celaya — Karlita (+52 461 217 1400)</option><option value="queretaro">Querétaro — Santi (+52 461 105 0193)</option></select></div>
+    <div class="cart-footer-actions">
+      <button class="continue-shopping-btn" type="button" onclick="toggleCart()">Seguir comprando</button>
+      <button class="checkout-btn" type="button" onclick="openOrderConfirmation()">Confirmar pedido</button>
+    </div>
+  </aside>
+  <div id="overlay" class="overlay" onclick="toggleCart()"></div>
+
+  <div id="order-confirm-modal" class="order-confirm-modal" aria-hidden="true">
+    <div class="order-confirm-box" role="dialog" aria-modal="true" aria-labelledby="order-confirm-title">
+      <button class="order-confirm-close" type="button" onclick="closeOrderConfirmation()" aria-label="Cerrar">✕</button>
+      <p class="section-kicker">Confirma tu pedido</p>
+      <h2 id="order-confirm-title">¿Estás segura de continuar?</h2>
+      <p class="muted">Primero registraremos el pedido en Google Sheets. Cuando recibamos el folio, abriremos WhatsApp con el resumen listo para enviar.</p>
+      <div id="order-confirm-summary" class="order-confirm-summary"></div>
+      <label class="order-field">
+        <span>Nombre de la clienta</span>
+        <input id="order-customer-name" type="text" maxlength="120" autocomplete="name" placeholder="Escribe tu nombre">
+      </label>
+      <label class="order-field">
+        <span>WhatsApp</span>
+        <input id="order-customer-whatsapp" type="tel" maxlength="20" autocomplete="tel" placeholder="Ej. 4611234567">
+      </label>
+      <div id="order-confirm-status" class="order-confirm-status" aria-live="polite"></div>
+      <div class="order-confirm-actions">
+        <button class="order-cancel-btn" type="button" onclick="closeOrderConfirmation()">Cancelar</button>
+        <button id="order-confirm-submit" class="order-submit-btn" type="button" onclick="confirmAndRegisterOrder()">Sí, confirmar pedido</button>
+      </div>
     </div>
   </div>
 
-  <main id="panelPrincipal" style="display:none;">
-    <h1>Centro Krearte</h1>
-    <div class="acciones">
-      <button class="repo" onclick="reposicion()">Generar reposición 14 días</button>
-      <button class="mensual" onclick="mensual()">Generar reporte mensual</button>
-      <button class="alerta" onclick="alertas()">Generar alertas de stock</button>
+  <div id="ideaModal" class="idea-modal" aria-hidden="true">
+    <div class="idea-box">
+      <button class="close-idea" type="button" onclick="closeIdea()">✕</button>
+      <p class="section-kicker">Krearte te inspira</p>
+      <h2 id="idea-title">Ideas para crear</h2>
+      <p id="idea-copy" class="muted"></p>
+      <div id="idea-list" class="idea-list"></div>
+      <div class="idea-modal-actions">
+        <button id="idea-filter-btn" class="brush-btn" type="button">Ver piezas sugeridas</button>
+        <button class="soft-btn" type="button" onclick="closeIdea()">Seguir viendo</button>
+      </div>
     </div>
-    <div id="mensaje" class="mensaje"></div>
-    <div id="pedidos" class="cargando">Cargando pedidos...</div>
-  </main>
+  </div>
 
-  <script>
-    function esc(valor) {
-      return String(valor == null ? '' : valor)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
-    }
+  <div id="inspirationModal" class="inspiration-modal" aria-hidden="true">
+    <div class="inspiration-box">
+      <button class="close-inspiration" type="button" onclick="closeInspiration()">✕</button>
+      <p class="section-kicker">Krearte recomienda</p>
+      <h2 id="insp-title">Inspiración para pintar</h2>
+      <p id="insp-subtitle" class="muted"></p>
+      <div id="insp-images" class="insp-images"></div>
+      <h3>Paletas de color</h3>
+      <div id="insp-palettes" class="insp-palettes"></div>
+      <h3>Tips rápidos</h3>
+      <ul id="insp-tips" class="insp-tips"></ul>
+      <h3>Tips de cuidado</h3>
+      <div id="care-tips" class="care-tips"></div>
+      <button id="insp-whatsapp" class="checkout-btn" type="button">Pedir recomendación por WhatsApp</button>
+    </div>
+  </div>
 
-    function mensaje(texto, correcto) {
-      var elemento = document.getElementById('mensaje');
-      elemento.textContent = texto || '';
-      elemento.className = 'mensaje ' + (correcto ? 'ok' : 'error');
-    }
+  <div id="imageModal" class="image-modal" onclick="closeImage(event)">
+    <button class="close-image" type="button" onclick="closeImage()">✕</button>
+    <div class="image-viewer-frame"><img id="modalImage" class="modal-content-image" src="" alt="Imagen ampliada"></div>
+    <div class="image-actions"><button type="button" onclick="event.stopPropagation(); zoomImage(0.2)">＋ Ampliar</button><button type="button" onclick="event.stopPropagation(); zoomImage(-0.2)">－ Reducir</button></div>
+    <div id="modalTitle" class="modal-title"></div>
+  </div>
 
-    function mostrarError(error) {
-      var texto = error && error.message
-        ? error.message
-        : String(error || 'Error desconocido');
-      mensaje(texto, false);
-    }
+  <nav class="bottom-app-nav clean-bottom-nav" aria-label="Accesos rápidos Krearte">
+    <button type="button" onclick="document.getElementById('inicio').scrollIntoView({behavior:'smooth'})"><span class="nav-icon home-icon"></span><small>Inicio</small></button>
+    <button type="button" onclick="openFavoritesPanel()"><span class="nav-icon heart-icon"></span><small>Favoritos</small></button>
+    <button type="button" class="palette-center" onclick="openAppInfo('colorimetria')"><span class="palette-core"></span><small>Paleta</small></button>
+    <button type="button" onclick="openAppInfo('temporadas')"><span class="nav-icon season-icon"></span><small>Temporadas</small></button>
+    <button type="button" onclick="document.getElementById('tiendas-krearte').scrollIntoView({behavior:'smooth', block:'start'})"><span class="nav-icon map-icon">📍</span><small>Ver distribuidores</small></button>
+    <button type="button" onclick="toggleCart()"><span class="nav-icon coffee-icon">☕</span><small>Mi Pedido</small></button>
+  </nav>
 
-    function entrar() {
-      var usuario = document.getElementById('loginUsuario').value.trim();
-      var contrasena = document.getElementById('loginPassword').value;
-      var loginMensaje = document.getElementById('loginMensaje');
-      var boton = document.querySelector('.login-caja button');
+  <div id="arrivalToast" class="arrival-toast" aria-hidden="true"><button type="button" onclick="closeArrivalToast()">×</button><strong>Acaban de llegar</strong><span>Hay piezas nuevas esperando ser pintadas.</span><a href="#acaban-de-llegar" onclick="closeArrivalToast()">Ver novedades</a></div>
 
-      if (!usuario || !contrasena) {
-        loginMensaje.textContent = 'Escribe el usuario y la contraseña.';
-        return;
-      }
+  <div id="appActionModal" class="app-action-modal" aria-hidden="true"><div class="app-action-box"><button class="close-app-action" type="button" onclick="closeAppAction()">✕</button><div id="appActionContent"></div></div></div>
 
-      loginMensaje.textContent = 'Verificando...';
-      boton.disabled = true;
-
-      google.script.run
-        .withSuccessHandler(function(resultado) {
-          boton.disabled = false;
-
-          if (!resultado || !resultado.ok) {
-            loginMensaje.textContent = resultado && resultado.error
-              ? resultado.error
-              : 'Usuario o contraseña incorrectos.';
-            return;
-          }
-
-          document.getElementById('loginPantalla').style.display = 'none';
-          document.getElementById('panelPrincipal').style.display = 'block';
-          loginMensaje.textContent = '';
-          cargar();
-        })
-        .withFailureHandler(function(error) {
-          boton.disabled = false;
-          loginMensaje.textContent = error && error.message
-            ? error.message
-            : 'No fue posible iniciar sesión.';
-        })
-        .iniciarSesion(usuario, contrasena);
-    }
-
-    function cargar() {
-      var contenedor = document.getElementById('pedidos');
-      contenedor.innerHTML = 'Cargando pedidos...';
-
-      google.script.run
-        .withSuccessHandler(function(lista) {
-          render(lista || []);
-        })
-        .withFailureHandler(function(error) {
-          mostrarError(error);
-          contenedor.innerHTML = '<p>No fue posible cargar los pedidos.</p>';
-        })
-        .obtenerPedidosPendientes();
-    }
-
-    function render(lista) {
-      var contenedor = document.getElementById('pedidos');
-
-      if (!Array.isArray(lista) || lista.length === 0) {
-        contenedor.innerHTML = '<p>No hay pedidos pendientes.</p>';
-        return;
-      }
-
-      contenedor.innerHTML = '';
-
-      lista.forEach(function(pedido) {
-        var articulo = document.createElement('article');
-        articulo.className = 'pedido';
-
-        var titulo = document.createElement('h2');
-        titulo.textContent = pedido.folio || 'Pedido';
-        articulo.appendChild(titulo);
-
-        var fecha = document.createElement('p');
-        fecha.innerHTML = '<b>Fecha:</b> ' + esc(pedido.fecha);
-        articulo.appendChild(fecha);
-
-        var cliente = document.createElement('p');
-        cliente.innerHTML = '<b>Cliente:</b> ' + esc(pedido.cliente);
-        articulo.appendChild(cliente);
-
-        var whatsapp = document.createElement('p');
-        whatsapp.innerHTML = '<b>WhatsApp:</b> ' + esc(pedido.whatsapp);
-        articulo.appendChild(whatsapp);
-
-        var listaProductos = document.createElement('ul');
-        var productos = pedido.productos || pedido.items || [];
-
-        productos.forEach(function(producto) {
-          var elemento = document.createElement('li');
-          var descripcion =
-            (producto.figura || '') +
-            ' · ' +
-            (producto.tamano || producto.tamaño || '');
-
-          if (producto.material) {
-            descripcion += ' · ' + producto.material;
-          }
-
-          descripcion += ' · x' + (producto.cantidad || 1);
-          elemento.textContent = descripcion;
-          listaProductos.appendChild(elemento);
-        });
-
-        articulo.appendChild(listaProductos);
-
-        var botones = document.createElement('div');
-        botones.className = 'botones';
-
-        var aceptarBoton = document.createElement('button');
-        aceptarBoton.className = 'aceptar';
-        aceptarBoton.textContent = 'Aceptar pedido';
-        aceptarBoton.onclick = function() {
-          aceptar(pedido.folio);
-        };
-
-        var rechazarBoton = document.createElement('button');
-        rechazarBoton.className = 'rechazar';
-        rechazarBoton.textContent = 'Rechazar pedido';
-        rechazarBoton.onclick = function() {
-          rechazar(pedido.folio);
-        };
-
-        botones.appendChild(aceptarBoton);
-        botones.appendChild(rechazarBoton);
-        articulo.appendChild(botones);
-        contenedor.appendChild(articulo);
-      });
-    }
-
-    function aceptar(folio) {
-      if (!confirm('¿Aceptar el pedido ' + folio + ' y descontar inventario?')) {
-        return;
-      }
-
-      mensaje('Procesando pedido...', true);
-
-      google.script.run
-        .withSuccessHandler(function(resultado) {
-          mensaje(resultado.mensaje || 'Pedido aceptado correctamente.', true);
-          cargar();
-        })
-        .withFailureHandler(function(error) {
-          mostrarError(error);
-        })
-        .aceptarPedido(folio, 'Karlita');
-    }
-
-    function rechazar(folio) {
-      if (!confirm('¿Rechazar el pedido ' + folio + '?')) {
-        return;
-      }
-
-      mensaje('Procesando pedido...', true);
-
-      google.script.run
-        .withSuccessHandler(function(resultado) {
-          mensaje(resultado.mensaje || 'Pedido rechazado correctamente.', true);
-          cargar();
-        })
-        .withFailureHandler(function(error) {
-          mostrarError(error);
-        })
-        .rechazarPedido(folio);
-    }
-
-    function alertas() {
-      mensaje('Generando alertas...', true);
-
-      google.script.run
-        .withSuccessHandler(function(resultado) {
-          mensaje(resultado.mensaje || 'Alertas actualizadas.', true);
-        })
-        .withFailureHandler(function(error) {
-          mostrarError(error);
-        })
-        .generarAlertasStock();
-    }
-
-    function mensual() {
-      mensaje('Generando reporte...', true);
-
-      google.script.run
-        .withSuccessHandler(function(resultado) {
-          mensaje(resultado.mensaje || 'Reporte actualizado.', true);
-        })
-        .withFailureHandler(function(error) {
-          mostrarError(error);
-        })
-        .generarReporteMensual();
-    }
-
-    function reposicion() {
-      mensaje('Generando reposición...', true);
-
-      google.script.run
-        .withSuccessHandler(function(resultado) {
-          mensaje(resultado.mensaje || 'Reposición preparada.', true);
-        })
-        .withFailureHandler(function(error) {
-          mostrarError(error);
-        })
-        .generarReposicion14Dias();
-    }
-
-    document.addEventListener('DOMContentLoaded', function() {
-      document.getElementById('loginPantalla').style.display = 'flex';
-      document.getElementById('panelPrincipal').style.display = 'none';
-
-      document.getElementById('loginPassword').addEventListener('keydown', function(evento) {
-        if (evento.key === 'Enter') entrar();
-      });
-    });
-  </script>
+  <footer><img src="assets/logo-krearte.jpg" alt="Krearte"><p><strong>Krearte</strong> — Creamos figuras. Tú creas recuerdos.</p><p>Gracias por formar parte de nuestra historia.</p></footer>
+  <script src="products.js?v=20260720-2"></script><script src="script.js?v=20260721-pinterest-hd"></script>
 </body>
-</html>`;
-}
-
-/* =====================================================
-   BÚSQUEDAS
-===================================================== */
-
-function buscarPedido_(hoja, folio) {
-  const valores = hoja.getDataRange().getValues();
-  for (let i = 1; i < valores.length; i++) {
-    if (texto_(valores[i][0]) === folio) return {fila: i + 1, valores: valores[i]};
-  }
-  return null;
-}
-
-function buscarDetalles_(hoja, folio) {
-  const valores = hoja.getDataRange().getValues();
-  const salida = [];
-  for (let i = 1; i < valores.length; i++) {
-    if (texto_(valores[i][0]) === folio) salida.push({fila: i + 1, valores: valores[i]});
-  }
-  return salida;
-}
-
-function buscarInventarioEnValores_(valores, figura, tamano) {
-  const clave = claveFigura_(figura, tamano);
-  for (let i = 1; i < valores.length; i++) {
-    if (claveFigura_(valores[i][3], valores[i][4]) === clave) {
-      return {fila: i + 1, stock: numero_(valores[i][6]), proveedor: texto_(valores[i][7]) || 'Sin proveedor'};
-    }
-  }
-  return null;
-}
-
-/* =====================================================
-   LECTURA GENÉRICA DE CONTENIDO
-===================================================== */
-
-function leerObjetos_(nombreHoja) {
-  const valores = hoja_(nombreHoja).getDataRange().getDisplayValues();
-  if (!valores.length) return [];
-  const encabezados = valores[0].map(function (h) { return claveEncabezado_(h); });
-  return valores.slice(1).filter(function (fila) {
-    return fila.some(function (celda) { return texto_(celda) !== ''; });
-  }).map(function (fila) {
-    const objeto = {};
-    encabezados.forEach(function (encabezado, i) { objeto[encabezado] = fila[i] == null ? '' : fila[i]; });
-    return objeto;
-  });
-}
-function obtenerProximamente_() {
-  const registros = leerObjetos_(KREARTE.HOJAS.PROXIMAMENTE);
-
-  const activo = registros.find(function (item) {
-    return verdadero_(item.activo);
-  });
-
-  const item = activo || registros[0];
-
-  if (!item) {
-    return {
-      etiqueta: '',
-      titulo: '',
-      descripcion: '',
-      imagen: ''
-    };
-  }
-
-  return {
-    etiqueta: texto_(item.etiqueta),
-    titulo: texto_(item.titulo),
-    descripcion: texto_(item.descripcion),
-    imagen: prepararUrlImagen_(item.imagen)
-  };
-}
-
-function prepararUrlImagen_(valor) {
-  let url = limpiarUrl_(valor);
-
-  if (!url) {
-    return '';
-  }
-
-  url = url.trim();
-
-  // Google Drive: convertir enlace compartido en enlace directo.
-  let match = url.match(
-    /drive\.google\.com\/file\/d\/([a-zA-Z0-9_-]+)/i
-  );
-
-  if (!match) {
-    match = url.match(/[?&]id=([a-zA-Z0-9_-]+)/i);
-  }
-
-  if (match) {
-    return (
-      'https://drive.google.com/uc?export=view&id=' +
-      match[1]
-    );
-  }
-
-  // Eliminar parámetros que pueden solicitar miniaturas.
-  try {
-    const parsed = new URL(url);
-
-    [
-      'w',
-      'h',
-      'width',
-      'height',
-      'resize',
-      'thumbnail',
-      'quality'
-    ].forEach(function (parametro) {
-      parsed.searchParams.delete(parametro);
-    });
-
-    return parsed.toString();
-  } catch (error) {
-    return url;
-  }
-}
-/* =====================================================
-   ACCESO AL PANEL ADMINISTRATIVO
-===================================================== */
-
-function configurarAdministrador() {
-  const usuario = 'KREARTE';
-  const contrasena = 'KREARTE33';
-
-  const propiedades = PropertiesService.getScriptProperties();
-
-  propiedades.setProperties({
-    ADMIN_USUARIO: normalizar_(usuario),
-    ADMIN_PASSWORD_HASH: crearHash_(contrasena)
-  });
-
-  return 'Administrador configurado correctamente.';
-}
-
-function iniciarSesion(usuario, contrasena) {
-  const propiedades = PropertiesService.getScriptProperties();
-
-  const usuarioGuardado = propiedades.getProperty('ADMIN_USUARIO');
-  const passwordGuardado = propiedades.getProperty('ADMIN_PASSWORD_HASH');
-
-  const usuarioRecibido = normalizar_(usuario);
-  const passwordRecibido = crearHash_(contrasena);
-
-  if (
-    !usuarioGuardado ||
-    !passwordGuardado ||
-    usuarioRecibido !== usuarioGuardado ||
-    passwordRecibido !== passwordGuardado
-  ) {
-    return {
-      ok: false,
-      error: 'Usuario o contraseña incorrectos.'
-    };
-  }
-
-  const token = Utilities.getUuid();
-
-  CacheService.getScriptCache().put(
-    'SESION_' + token,
-    JSON.stringify({
-      usuario: usuarioRecibido,
-      creado: new Date().toISOString()
-    }),
-    1800
-  );
-
-  return {
-    ok: true,
-    token: token,
-    usuario: usuario
-  };
-}
-
-function validarSesion_(token) {
-  if (!token) {
-    throw new Error('Debes iniciar sesión.');
-  }
-
-  const sesion = CacheService
-    .getScriptCache()
-    .get('SESION_' + token);
-
-  if (!sesion) {
-    throw new Error(
-      'La sesión expiró. Vuelve a iniciar sesión.'
-    );
-  }
-
-  return JSON.parse(sesion);
-}
-
-function cerrarSesion(token) {
-  if (token) {
-    CacheService
-      .getScriptCache()
-      .remove('SESION_' + token);
-  }
-
-  return { ok: true };
-}
-
-function crearHash_(texto) {
-  const bytes = Utilities.computeDigest(
-    Utilities.DigestAlgorithm.SHA_256,
-    String(texto || ''),
-    Utilities.Charset.UTF_8
-  );
-
-  return bytes.map(function (byte) {
-    const valor = byte < 0 ? byte + 256 : byte;
-    return ('0' + valor.toString(16)).slice(-2);
-  }).join('');
-}
-/* =====================================================
-   UTILIDADES
-===================================================== */
-
-function libro_() {
-  if (!KREARTE.SPREADSHEET_ID) throw new Error('Falta SPREADSHEET_ID.');
-  return SpreadsheetApp.openById(KREARTE.SPREADSHEET_ID);
-}
-
-function hoja_(nombre) {
-  const hoja = libro_().getSheetByName(nombre);
-  if (!hoja) throw new Error('No existe la hoja: ' + nombre);
-  return hoja;
-}
-
-function json_(datos) {
-  return ContentService.createTextOutput(JSON.stringify(datos)).setMimeType(ContentService.MimeType.JSON);
-}
-
-function generarFolio_() {
-  return 'KRE-' + Utilities.formatDate(new Date(), KREARTE.TZ, 'yyyyMMdd-HHmmss') + '-' + Math.floor(100 + Math.random() * 900);
-}
-
-function crearIdFigura_(figura, tamano) {
-  return normalizar_(figura + '-' + tamano).replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').toUpperCase();
-}
-
-function claveFigura_(figura, tamano) {
-  return normalizar_(figura) + '||' + normalizar_(tamano);
-}
-
-function texto_(valor) {
-  return String(valor == null ? '' : valor).trim();
-}
-
-function limpiarTexto_(valor, maximo) {
-  return texto_(valor).replace(/[<>]/g, '').slice(0, maximo || 500);
-}
-
-function limpiarTelefono_(valor) {
-  return texto_(valor).replace(/[^0-9+]/g, '').slice(0, 20);
-}
-
-function limpiarUrl_(valor) {
-  const texto = texto_(valor);
-  if (!texto) return '';
-  const match = texto.match(/https?:\/\/[^\s"']+/i);
-  return match ? match[0] : texto;
-}
-
-function numero_(valor) {
-  const n = Number(String(valor == null ? '' : valor).replace(/,/g, '').trim());
-  return isFinite(n) ? n : 0;
-}
-
-function cantidad_(valor) {
-  const n = Number(valor);
-  if (!Number.isInteger(n) || n < 1 || n > 999) throw new Error('Cantidad no válida.');
-  return n;
-}
-
-function verdadero_(valor) {
-  if (valor === true || valor === 1) return true;
-  return ['si', 'sí', 'true', 'activo', 'activa', '1', 'x'].indexOf(normalizar_(valor)) >= 0;
-}
-
-function normalizar_(valor) {
-  return texto_(valor).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim();
-}
-
-function claveEncabezado_(valor) {
-  return normalizar_(valor).replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '');
-}
-
-function formatearFecha_(valor) {
-  if (valor instanceof Date && !isNaN(valor.getTime())) return Utilities.formatDate(valor, KREARTE.TZ, 'dd/MM/yyyy HH:mm');
-  return texto_(valor);
-}
-
-function limpiarDatos_(hoja, columnas) {
-  const ultima = hoja.getLastRow();
-  if (ultima > 1) hoja.getRange(2, 1, ultima - 1, columnas).clearContent();
-}
-
-function mensajeError_(error) {
-  return error && error.message ? error.message : String(error || 'Error desconocido');
-}
-function probarRegistroPedido() {
-  const resultado = guardarPedido_({
-    accion: 'guardarPedido',
-    cliente: 'Cliente de prueba',
-    whatsapp: '5512345678',
-    items: [
-      {
-        figura: 'Figura de prueba',
-        tamano: 'Mediano',
-        material: 'Cerámica',
-        cantidad: 2
-      }
-    ]
-  });
-
-  Logger.log(JSON.stringify(resultado));
-  return resultado;
-}
-function normalizarTexto(valor) {
-  return normalizar_(valor);
-}
+</html>
